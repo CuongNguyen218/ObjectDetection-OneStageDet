@@ -1,218 +1,637 @@
 #
-#   Base network structure for Darknet networks
+#   Darknet related layers
 #   Copyright EAVISE
 #
 
-import os
-import collections
+# modified by mileiston
+
 import logging as log
-import numpy as np
 import torch
 import torch.nn as nn
-from ._lightnet import Lightnet
-from ..network import layer as vn_layer
-
-__all__ = ['Darknet'] 
+import torch.nn.functional as F
 
 
-class Darknet(Lightnet):
-    """ This network module provides functionality to load darknet weight files.
+__all__ = ['Conv2dBatchLeaky', 'Conv2dBatch', 'GlobalAvgPool2d', 'PaddedMaxPool2d', 'Reorg', 'SELayer',
+            'CReLU', 'Scale', 'ScaleReLU', 'L2Norm', 'Conv2dL2NormLeaky', 'PPReLU', 'Conv2dBatchPPReLU',
+            'Conv2dBatchPReLU', 'Conv2dBatchPLU', 'Conv2dBatchELU', 'Conv2dBatchSELU',
+            'Shuffle', 'Conv2dBatchReLU']
 
-    Attributes:
-        self.seen (int): The number of images the network has processed to train (used by engine)
+
+class Conv2dBatchLeaky(nn.Module):
+    """ This convenience layer groups a 2D convolution, a batchnorm and a leaky ReLU.
+    They are executed in a sequential manner.
+
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int or tuple): Size of the kernel of the convolution
+        stride (int or tuple): Stride of the convolution
+        padding (int or tuple): padding of the convolution
+        leaky_slope (number, optional): Controls the angle of the negative slope of the leaky ReLU; Default **0.1**
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, leaky_slope=0.1):
+        super(Conv2dBatchLeaky, self).__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+        self.leaky_slope = leaky_slope
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            nn.LeakyReLU(self.leaky_slope, inplace=True)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding}, negative_slope={leaky_slope})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+class Conv2dDWBatchLeaky(nn.Module):
+    """ This convenience layer groups a 2D convolution, a batchnorm and a leaky ReLU.
+    They are executed in a sequential manner.
+
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int or tuple): Size of the kernel of the convolution
+        stride (int or tuple): Stride of the convolution
+        padding (int or tuple): padding of the convolution
+        leaky_slope (number, optional): Controls the angle of the negative slope of the leaky ReLU; Default **0.1**
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, leaky_slope=0.1):
+        super(Conv2dDWBatchLeaky, self).__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+        self.leaky_slope = leaky_slope
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding,groups=self.in_channels, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            nn.LeakyReLU(self.leaky_slope, inplace=True)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding}, negative_slope={leaky_slope})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+class Conv2dBatchPPReLU(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            PPReLU(self.out_channels)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+
+class Conv2dBatchPReLU(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            nn.PReLU(self.out_channels)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+
+class Conv2dBatchPLU(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            PLU()
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        y = self.layers(x)
+        return y
+
+
+class Conv2dBatchELU(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = int(kernel_size/2)
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+
+        # Layer
+        self.layer = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            nn.ELU(inplace=True)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        y = self.layer(x)
+        return y
+
+
+class Conv2dBatchSELU(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+
+        # Layer
+        self.layer = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels), #, eps=1e-6, momentum=0.01),
+            nn.SELU(inplace=True)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        y = self.layer(x)
+        return y
+
+
+class Conv2dBatch(nn.Module):
+    """ This convenience layer groups a 2D convolution, a batchnorm and a leaky ReLU.
+    They are executed in a sequential manner.
+
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int or tuple): Size of the kernel of the convolution
+        stride (int or tuple): Stride of the convolution
+        padding (int or tuple): padding of the convolution
+        leaky_slope (number, optional): Controls the angle of the negative slope of the leaky ReLU; Default **0.1**
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, leaky_slope=0.1):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+        self.leaky_slope = leaky_slope
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels),
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+
+class GlobalAvgPool2d(nn.Module):
+    """ This layer averages each channel to a single number.
     """
     def __init__(self):
+        super(GlobalAvgPool2d, self).__init__()
+
+    def forward(self, x):
+        B = x.data.size(0)
+        C = x.data.size(1)
+        H = x.data.size(2)
+        W = x.data.size(3)
+        x = F.avg_pool2d(x, (H, W))
+        x = x.view(B, C)
+        return x
+
+
+class PaddedMaxPool2d(nn.Module):
+    """ Maxpool layer with a replicating padding.
+
+    Args:
+        kernel_size (int or tuple): Kernel size for maxpooling
+        stride (int or tuple, optional): The stride of the window; Default ``kernel_size``
+        padding (tuple, optional): (left, right, top, bottom) padding; Default **None**
+        dilation (int or tuple, optional): A parameter that controls the stride of elements in the window
+    """
+    def __init__(self, kernel_size, stride=None, padding=(0, 0, 0, 0), dilation=1):
+        super(PaddedMaxPool2d, self).__init__()
+        self.kernel_size = kernel_size
+        self.stride = stride or kernel_size
+        self.padding = padding
+        self.dilation = dilation
+
+    def __repr__(self):
+        return f'{self.__class__.__name__} (kernel_size={self.kernel_size}, stride={self.stride}, padding={self.padding}, dilation={self.dilation})'
+
+    def forward(self, x):
+        x = F.max_pool2d(F.pad(x, self.padding, mode='replicate'), self.kernel_size, self.stride, 0, self.dilation)
+        return x
+
+
+class Reorg(nn.Module):
+    """ This layer reorganizes a tensor according to a stride.
+    The dimensions 2,3 will be sliced by the stride and then stacked in dimension 1. (input must have 4 dimensions)
+
+    Args:
+        stride (int): stride to divide the input tensor
+    """
+    def __init__(self, stride=2):
+        super(Reorg, self).__init__()
+        if not isinstance(stride, int):
+            raise TypeError(f'stride is not an int [{type(stride)}]')
+        self.stride = stride
+        self.darknet = True
+
+    def __repr__(self):
+        return f'{self.__class__.__name__} (stride={self.stride}, darknet_compatible_mode={self.darknet})'
+
+    def forward(self, x):
+        assert(x.data.dim() == 4)
+        B = x.data.size(0)
+        C = x.data.size(1)
+        H = x.data.size(2)
+        W = x.data.size(3)
+
+        if H % self.stride != 0:
+            raise ValueError(f'Dimension mismatch: {H} is not divisible by {self.stride}')
+        if W % self.stride != 0:
+            raise ValueError(f'Dimension mismatch: {W} is not divisible by {self.stride}')
+
+        # darknet compatible version from: https://github.com/thtrieu/darkflow/issues/173#issuecomment-296048648
+        if self.darknet:
+            x = x.view(B, C//(self.stride**2), H, self.stride, W, self.stride).contiguous()
+            x = x.permute(0, 3, 5, 1, 2, 4).contiguous()
+            x = x.view(B, -1, H//self.stride, W//self.stride)
+        else:
+            ws, hs = self.stride, self.stride
+            x = x.view(B, C, H//hs, hs, W//ws, ws).transpose(3, 4).contiguous()
+            x = x.view(B, C, H//hs*W//ws, hs*ws).transpose(2, 3).contiguous()
+            x = x.view(B, C, hs*ws, H//hs, W//ws).transpose(1, 2).contiguous()
+            x = x.view(B, hs*ws*C, H//hs, W//ws)
+
+        return x
+
+
+class SELayer(nn.Module):
+    def __init__(self, nchannels, reduction=16):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+                nn.Linear(nchannels, nchannels // reduction),
+                nn.ReLU(inplace=True),
+                nn.Linear(nchannels // reduction, nchannels),
+                nn.Sigmoid()
+        )
+        self.nchannels = nchannels
+        self.reudction = reduction
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+    def __repr__(self):
+        s = '{name} ({nchannels}, {reduction})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class Scale(nn.Module):
+    def __init__(self, nchannels, bias=True, init_scale=1.0):
         super().__init__()
-        self.header = [0, 2, 0]
+        # nn.Parameter is a special kind of Tensor, that will get
+        # automatically registered as Module's parameter once it's assigned
+        # as an attribute. Parameters and buffers need to be registered, or
+        # they won't appear in .parameters() (doesn't apply to buffers), and
+        # won't be converted when e.g. .cuda() is called. You can use
+        # .register_buffer() to register buffers.
+        # nn.Parameters require gradients by default.
+        self.nchannels = nchannels
+        self.weight = nn.Parameter(torch.Tensor(1, nchannels, 1, 1))
+        if bias:
+            self.bias = nn.Parameter(torch.Tensor(1, nchannels, 1, 1))
+        else:
+            # You should always register all possible parameters, but the
+            # optional ones can be None if you want.
+            self.register_parameter('bias', None)
 
-    def load_weights(self, weights_file, clear):
-        """ This function will load the weights from a file.
-        If the file extension is ``.pt``, it will be considered as a `pytorch pickle file <http://pytorch.org/docs/0.3.0/notes/serialization.html#recommended-approach-for-saving-a-model>`_.
-        Otherwise, the file is considered to be a darknet binary weight file.
+        # Not a very smart way to initialize weights
+        self.reset_parameters(init_scale)
 
-        Args:
-            weights_file (str): path to file
+    def reset_parameters(self, init_scale=1.0):
+        self.weight.data.fill_(init_scale)
+        if self.bias is not None:
+            self.bias.data.fill_(0.0)
+
+    def forward(self, x):
+        # See the autograd section for explanation of what happens here.
+        y = x * self.weight
+        if self.bias is not None:
+            y += self.bias
+        return y
+
+    def __repr__(self):
+        s = '{} ({}, {})'
+        return s.format(self.__class__.__name__, self.nchannels, self.bias is not None)
+
+
+class ScaleReLU(nn.Module):
+    def __init__(self, nchannels):
+        super().__init__()
+        self.scale = Scale(nchannels) 
+        self.relu = nn.ReLU(inplace=True)
+        self.nchannels = nchannels
+
+    def forward(self, x):
+        x1 = self.scale(x)
+        y = self.relu(x1)
+        return y
+
+    def __repr__(self):
+        s = '{name} ({nchannels})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class PPReLU(nn.Module):
+    def __init__(self, nchannels):
+        super().__init__()
+        self.scale1 = Scale(nchannels, bias=False, init_scale=1.0) 
+        self.scale2 = Scale(nchannels, bias=False, init_scale=0.1) 
+        self.nchannels = nchannels
+
+    def forward(self, x):
+        x1 = self.scale1(x)
+        x2 = self.scale2(x)
+        y = torch.max(x1, x2)
+        return y
+
+    def __repr__(self):
+        s = '{name} ({nchannels})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class PLU(nn.Module):
+    """
+    y = max(alpha*(x+c)−c, min(alpha*(x−c)+c, x))
+    from PLU: The Piecewise Linear Unit Activation Function
+    """
+    def __init__(self, alpha=0.1, c=1):
+        super().__init__()
+        self.alpha = alpha
+        self.c = c
+
+    def forward(self, x):
+        x1 = self.alpha*(x + self.c) - self.c
+        x2 = self.alpha*(x - self.c) + self.c
+        min1 = torch.min(x2, x)
+        min2 = torch.max(x1, min1)
+        return min2
+
+    def __repr__(self):
+        s = '{name} ({alhpa}, {c})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class CReLU(nn.Module):
+    def __init__(self, nchannels):
+        super().__init__()
+        self.scale = Scale(2*nchannels) 
+        self.relu = nn.ReLU(inplace=True)
+        self.in_channels = nchannels
+        self.out_channels = 2*nchannels
+
+    def forward(self, x):
+        x1 = torch.cat((x, -x), 1)
+        x2 = self.scale(x1)
+        y = self.relu(x2)
+        return y
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class L2Norm(nn.Module):
+    def __init__(self, nchannels, bias=True):
+        super().__init__()
+        self.scale = Scale(nchannels, bias=bias) 
+        self.nchannels = nchannels
+        self.eps = 1e-6
+
+    def forward(self, x):
+        #norm = x.pow(2).sum(dim=1, keepdim=True).sqrt()+self.eps
+        #x = torch.div(x,norm)
+        l2_norm = x.norm(2, dim=1, keepdim=True) + self.eps
+        x_norm = x.div(l2_norm)
+        y = self.scale(x_norm)
+        return y
+
+    def __repr__(self):
+        s = '{name} ({nchannels})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class Conv2dL2NormLeaky(nn.Module):
+    """ This convenience layer groups a 2D convolution, a batchnorm and a leaky ReLU.
+    They are executed in a sequential manner.
+
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int or tuple): Size of the kernel of the convolution
+        stride (int or tuple): Stride of the convolution
+        padding (int or tuple): padding of the convolution
+        leaky_slope (number, optional): Controls the angle of the negative slope of the leaky ReLU; Default **0.1**
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, leaky_slope=0.1, bias=True):
+        super().__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
+        else:
+            self.padding = int(kernel_size/2)
+        self.leaky_slope = leaky_slope
+
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            L2Norm(self.out_channels, bias=bias),
+            nn.LeakyReLU(self.leaky_slope, inplace=True)
+        )
+
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding}, negative_slope={leaky_slope})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+    def forward(self, x):
+        x = self.layers(x)
+        return x
+
+
+## shufflenet
+class Shuffle(nn.Module):
+    def __init__(self, groups):
+        super().__init__()
+        self.groups = groups
+
+    def forward(self, x):
         """
-        if os.path.splitext(weights_file)[1] == '.pt':
-            log.debug('Loading weights from pytorch file')
-            super().load_weights(weights_file, clear)
-        else:
-            log.debug('Loading weights from darknet file')
-            self._load_darknet_weights(weights_file, clear)
-
-    def save_weights(self, weights_file, seen=None):
-        """ This function will save the weights to a file.
-        If the file extension is ``.pt``, it will be considered as a `pytorch pickle file <http://pytorch.org/docs/0.3.0/notes/serialization.html#recommended-approach-for-saving-a-model>`_.
-        Otherwise, the file is considered to be a darknet binary weight file.
-
-        Args:
-            weights_file (str): path to file
-            seen (int, optional): Number of images trained on; Default **self.seen**
+        Channel shuffle: [N,C,H,W] -> [N,g,C/g,H,W] -> [N,C/g,g,H,w] -> [N,C,H,W]
         """
-        if os.path.splitext(weights_file)[1] == '.pt':
-            log.debug('Saving weights to pytorch file')
-            super().save_weights(weights_file, seen)
+        N, C, H, W = x.size()
+        g = self.groups
+        return x.view(N, g, C/g, H, W).permute(0, 2, 1, 3, 4).contiguous().view(N, C, H, W)
+
+    def __repr__(self):
+        s = '{name} (groups={groups})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+# mobilenet
+class Conv2dBatchReLU(nn.Module):
+    """ This convenience layer groups a 2D convolution, a batchnorm and a ReLU.
+    They are executed in a sequential manner.
+
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int or tuple): Size of the kernel of the convolution
+        stride (int or tuple): Stride of the convolution
+        padding (int or tuple): padding of the convolution
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super(Conv2dBatchReLU, self).__init__()
+
+        # Parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        if isinstance(kernel_size, (list, tuple)):
+            self.padding = [int(ii/2) for ii in kernel_size]
         else:
-            log.debug('Saving weights to darknet file')
-            self._save_darknet_weights(weights_file, seen)
+            self.padding = int(kernel_size/2)
 
-    def _load_darknet_weights(self, weights_file, clear=False):
-        weights = WeightLoader(weights_file)
-        self.header = weights.header
-        self.seen = weights.seen
-        if clear:
-            self.seen = 0
-        if hasattr(self.loss, 'seen'):
-            self.loss.seen = self.seen
-        
-        for module in self.modules_recurse():
-            try:
-                weights.load_layer(module)
-                log.debug(f'Layer loaded: {module}')
-                if weights.start >= weights.size:
-                    log.debug(f'Finished loading weights [{weights.start}/{weights.size} weights]')
-                    break
-            except NotImplementedError:
-                log.debug(f'Layer skipped: {module.__class__.__name__}')
+        # Layer
+        self.layers = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding, bias=False),
+            nn.BatchNorm2d(self.out_channels),
+            nn.ReLU(inplace=True)
+        )
 
-    def _save_darknet_weights(self, weights_file, seen=None):
-        if seen is None:
-            seen = self.seen
-        weights = WeightSaver(self.header, seen)
+    def __repr__(self):
+        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding})'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
 
-        for module in self.modules_recurse():
-            try:
-                weights.save_layer(module)
-                log.debug(f'Layer saved: {module}')
-            except NotImplementedError:
-                log.debug(f'Layer skipped: {module.__class__.__name__}')
-
-        weights.write_file(weights_file)
+    def forward(self, x):
+        x = self.layers(x)
+        return x
 
 
-class WeightLoader:
-    """ Load darknet weight files into pytorch layers """
-    def __init__(self, filename):
-        with open(filename, 'rb') as fp:
-            self.header = np.fromfile(fp, count=3, dtype=np.int32).tolist()
-            ver_num = self.header[0]*100+self.header[1]*10+self.header[2]
-            log.debug(f'Loading weight file: version {self.header[0]}.{self.header[1]}.{self.header[2]}')
-
-            if ver_num <= 19:
-                log.warn('Weight file uses sizeof to compute variable size, which might lead to undefined behaviour. (choosing int=int32, float=float32)')
-                self.seen = int(np.fromfile(fp, count=1, dtype=np.int32)[0])
-            elif ver_num <= 29:
-                log.warn('Weight file uses sizeof to compute variable size, which might lead to undefined behaviour. (choosing int=int32, float=float32, size_t=int64)')
-                self.seen = int(np.fromfile(fp, count=1, dtype=np.int64)[0])
-            else:
-                log.error('New weight file syntax! Loading of weights might not work properly. Please submit an issue with the weight file version number. [Run with DEBUG logging level]')
-                self.seen = int(np.fromfile(fp, count=1, dtype=np.int64)[0])
-
-            self.buf = np.fromfile(fp, dtype=np.float32)
-
-        self.start = 0
-        self.size = self.buf.size
-
-    def load_layer(self, layer):
-        """ Load weights for a layer from the weights file """
-        if type(layer) == nn.Conv2d:
-            self._load_conv(layer)
-        elif type(layer) == vn_layer.Conv2dBatchLeaky:
-            self._load_convbatch(layer)
-        elif type(layer) == nn.Linear:
-            self._load_fc(layer)
-        else:
-            raise NotImplementedError(f'The layer you are trying to load is not supported [{type(layer)}]')
-
-    def _load_conv(self, model):
-        num_b = model.bias.numel()
-        model.bias.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                   .view_as(model.bias.data))
-        self.start += num_b
-
-        num_w = model.weight.numel()
-        model.weight.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_w])
-                                     .view_as(model.weight.data))
-        self.start += num_w
-
-    def _load_convbatch(self, model):
-        num_b = model.layers[1].bias.numel()
-        model.layers[1].bias.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                             .view_as(model.layers[1].bias.data))
-        self.start += num_b
-        model.layers[1].weight.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                               .view_as(model.layers[1].weight.data))
-        self.start += num_b
-        model.layers[1].running_mean.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                                .view_as(model.layers[1].running_mean))
-        self.start += num_b
-        model.layers[1].running_var.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                               .view_as(model.layers[1].running_var))
-        self.start += num_b
-
-        num_w = model.layers[0].weight.numel()
-        model.layers[0].weight.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_w])
-                                               .view_as(model.layers[0].weight.data))
-        self.start += num_w
-
-    def _load_fc(self, model):
-        num_b = model.bias.numel()
-        model.bias.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_b])
-                                   .view_as(model.bias.data))
-        self.start += num_b
-
-        num_w = model.weight.numel()
-        model.weight.data.copy_(torch.from_numpy(self.buf[self.start:self.start+num_w])
-                                     .view_as(model.weight.data))
-        self.start += num_w
-
-
-class WeightSaver:
-    """ Save darknet weight files from pytorch layers """
-    def __init__(self, header, seen):
-        self.weights = []
-        self.header = np.array(header, dtype=np.int32)
-        ver_num = self.header[0]*100+self.header[1]*10+self.header[2]
-        if ver_num <= 19:
-            self.seen = np.int32(seen)
-        elif ver_num <= 29:
-            self.seen = np.int64(seen)
-        else:
-            log.error('New weight file syntax! Saving of weights might not work properly. Please submit an issue with the weight file version number. [Run with DEBUG logging level]')
-            self.seen = np.int64(seen)
-
-    def write_file(self, filename):
-        """ Save the accumulated weights to a darknet weightfile """
-        log.debug(f'Writing weight file: version {self.header[0]}.{self.header[1]}.{self.header[2]}')
-        with open(filename, 'wb') as fp:
-            self.header.tofile(fp)
-            self.seen.tofile(fp)
-            for np_arr in self.weights:
-                np_arr.tofile(fp)
-        log.info(f'Weight file saved as {filename}')
-
-    def save_layer(self, layer):
-        """ save weights for a layer """
-        if type(layer) == nn.Conv2d:
-            self._save_conv(layer)
-        elif type(layer) == vn_layer.Conv2dBatchLeaky:
-            self._save_convbatch(layer)
-        elif type(layer) == nn.Linear:
-            self._save_fc(layer)
-        else:
-            raise NotImplementedError(f'The layer you are trying to save is not supported [{type(layer)}]')
-
-    def _save_conv(self, model):
-        self.weights.append(model.bias.cpu().data.numpy())
-        self.weights.append(model.weight.cpu().data.numpy())
-
-    def _save_convbatch(self, model):
-        self.weights.append(model.layers[1].bias.cpu().data.numpy())
-        self.weights.append(model.layers[1].weight.cpu().data.numpy())
-        self.weights.append(model.layers[1].running_mean.cpu().numpy())
-        self.weights.append(model.layers[1].running_var.cpu().numpy())
-        self.weights.append(model.layers[0].weight.cpu().data.numpy())
-
-    def _save_fc(self, model):
-        self.weights.append(model.bias.cpu().data.numpy())
-        self.weights.append(model.weight.cpu().data.numpy())
